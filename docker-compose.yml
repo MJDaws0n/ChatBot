@@ -1,0 +1,25 @@
+services:
+  chatbot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Ensure the container uses the same port internally as exposed.
+      - PORT=${PORT}
+      - DATA_DIR=/app/data
+      # Defaults (override in .env if you want)
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-z-ai/glm-4.7}
+      - USE_CHEAPEST_MODEL=${USE_CHEAPEST_MODEL:-false}
+      - RECENT_MESSAGES=${RECENT_MESSAGES:-8}
+      - SUMMARY_MESSAGES=${SUMMARY_MESSAGES:-24}
+      - SUMMARY_MIN_MESSAGES=${SUMMARY_MIN_MESSAGES:-40}
+      - TEMPERATURE=${TEMPERATURE:-0.2}
+      - MAX_TOKENS=${MAX_TOKENS:-900}
+    ports:
+      - "${PORT}:${PORT}"
+    volumes:
+      - chatbot_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  chatbot_data:
