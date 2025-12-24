@@ -7,6 +7,76 @@ const state = {
   images: []
 };
 
+function ensureToastHost() {
+  let host = document.querySelector("#toastHost");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toastHost";
+    host.className = "toast-host";
+    host.setAttribute("aria-live", "polite");
+    host.setAttribute("aria-atomic", "true");
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function showToast({ title, message, timeoutMs = 7000 } = {}) {
+  const host = ensureToastHost();
+  host.innerHTML = "";
+
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.setAttribute("role", "status");
+
+  const content = document.createElement("div");
+  content.className = "toast-content";
+
+  const t = document.createElement("div");
+  t.className = "toast-title";
+  t.textContent = title || "Notice";
+
+  const m = document.createElement("div");
+  m.className = "toast-message";
+  m.textContent = message || "";
+
+  content.appendChild(t);
+  if (m.textContent) content.appendChild(m);
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast-close";
+  close.setAttribute("aria-label", "Close");
+  close.innerHTML = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  `;
+
+  const remove = () => {
+    if (!toast.isConnected) return;
+    toast.classList.add("toast-leave");
+    window.setTimeout(() => toast.remove(), 160);
+  };
+
+  close.addEventListener("click", remove);
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape") remove();
+    },
+    { once: true }
+  );
+
+  toast.appendChild(content);
+  toast.appendChild(close);
+  host.appendChild(toast);
+
+  if (timeoutMs > 0) {
+    window.setTimeout(remove, timeoutMs);
+  }
+}
+
 function loadTheme() {
   const saved = localStorage.getItem("theme");
   state.theme = saved || (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -33,6 +103,70 @@ function escapeHtml(str) {
     .replaceAll("'", "&#039;");
 }
 
+async function copyToClipboard(text) {
+  const value = (text ?? "").toString();
+  if (!value) return false;
+
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // fall through to legacy copy
+    }
+  }
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.left = "-1000px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function enhanceCodeBlocks(rootEl) {
+  if (!rootEl) return;
+  const pres = rootEl.querySelectorAll("pre");
+  for (const pre of pres) {
+    const code = pre.querySelector("code");
+    if (!code) continue;
+    if (pre.querySelector(".code-copy-btn")) continue;
+
+    pre.classList.add("has-copy");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "code-copy-btn";
+    btn.textContent = "Copy";
+
+    let resetTimer = null;
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const ok = await copyToClipboard(code.textContent);
+      btn.textContent = ok ? "Copied" : "Failed";
+      btn.classList.toggle("is-ok", ok);
+      btn.classList.toggle("is-fail", !ok);
+      if (resetTimer) window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        btn.textContent = "Copy";
+        btn.classList.remove("is-ok", "is-fail");
+      }, 1400);
+    });
+
+    pre.appendChild(btn);
+  }
+}
+
 function renderMessage({ role, ts, content, html, images }) {
   const wrap = document.createElement("div");
   wrap.className = "msg";
@@ -54,6 +188,7 @@ function renderMessage({ role, ts, content, html, images }) {
   body.className = "md";
   if (role === "assistant" && html) {
     body.innerHTML = html;
+    enhanceCodeBlocks(body);
   } else {
     body.textContent = content || "";
   }
@@ -127,6 +262,56 @@ function showLoading() {
 function hideLoading() {
   const loading = $("#messages .loading");
   if (loading) loading.remove();
+}
+
+async function streamChat({ sessionId, message, onDelta, onHtml, onModel }) {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, message })
+  });
+
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const event = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+
+      const lines = event.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data) continue;
+        if (data === "[DONE]") return;
+
+        let parsed;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+
+        if (parsed?.error) throw new Error(parsed.error);
+        if (parsed?.model && onModel) onModel(parsed.model);
+        if (typeof parsed?.delta === "string" && onDelta) onDelta(parsed.delta);
+        if (typeof parsed?.html === "string" && onHtml) onHtml(parsed.html);
+      }
+    }
+  }
 }
 
 async function loadHistory() {
@@ -214,21 +399,61 @@ async function send() {
   showLoading();
 
   try {
-    const form = new FormData();
-    form.set("sessionId", state.sessionId);
-    form.set("message", text);
-    for (const f of files) form.append("images", f);
+    // Stream for text-only messages for a ChatGPT-like live output.
+    const canStream = !files || files.length === 0;
+    if (canStream) {
+      hideLoading();
 
-    const res = await fetch("/api/chat", { method: "POST", body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      const assistantMsg = renderMessage({
+        role: "assistant",
+        ts: new Date().toISOString(),
+        content: ""
+      });
+      messagesEl.appendChild(assistantMsg);
+      scrollToBottom();
 
-    state.images = [];
-    $("#images").value = "";
-    renderSelectedImages();
+      const bodyEl = assistantMsg.querySelector(".md");
+      let acc = "";
+      let usingHtml = false;
 
-    hideLoading();
-    await loadHistory();
+      await streamChat({
+        sessionId: state.sessionId,
+        message: text,
+        onDelta: (d) => {
+          acc += d;
+          if (!usingHtml) {
+            bodyEl.textContent = acc;
+            scrollToBottom();
+          }
+        },
+        onHtml: (html) => {
+          usingHtml = true;
+          bodyEl.innerHTML = html;
+          enhanceCodeBlocks(bodyEl);
+          scrollToBottom();
+        },
+        onModel: () => {}
+      });
+
+      // Re-load history so markdown formatting + copy buttons apply.
+      await loadHistory();
+    } else {
+      const form = new FormData();
+      form.set("sessionId", state.sessionId);
+      form.set("message", text);
+      for (const f of files) form.append("images", f);
+
+      const res = await fetch("/api/chat", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+
+      state.images = [];
+      $("#images").value = "";
+      renderSelectedImages();
+
+      hideLoading();
+      await loadHistory();
+    }
   } catch (err) {
     console.error(err);
     hideLoading();
@@ -266,10 +491,43 @@ async function showMemory() {
 function wireEvents() {
   $("#toggleTheme").addEventListener("click", toggleTheme);
 
-  $("#images").addEventListener("change", (e) => {
-    const newFiles = Array.from(e.target.files || []);
-    state.images = [...state.images, ...newFiles].slice(0, 8);
-    renderSelectedImages();
+  // OpenRouter may return: "No endpoints found that support image input" for non-vision models.
+  // Instead of letting users pick images and then failing, show a friendly in-app popup.
+  const imageUpload = $("#imageUpload");
+  const imagesInput = $("#images");
+
+  const showImageNotSupported = () => {
+    showToast({
+      title: "Images not supported",
+      message:
+        "This chat model doesn't support image input on OpenRouter (HTTP 404: No endpoints found that support image input). I need to sort this out or find out why. For now images don't work with this model.",
+      timeoutMs: 9000
+    });
+  };
+
+  imageUpload.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showImageNotSupported();
+  });
+
+  imageUpload.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      showImageNotSupported();
+    }
+  });
+
+  imagesInput.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showImageNotSupported();
+  });
+
+  imagesInput.addEventListener("change", (e) => {
+    // Defensive: if a browser still allows selection somehow, clear it.
+    e.target.value = "";
+    showImageNotSupported();
   });
 
   $("#send").addEventListener("click", send);

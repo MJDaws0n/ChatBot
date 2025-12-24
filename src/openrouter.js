@@ -23,6 +23,48 @@ async function fetchJson(url, options) {
   return text ? JSON.parse(text) : null;
 }
 
+async function* fetchSseJson(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`OpenRouter HTTP ${res.status}: ${text.slice(0, 2000)}`);
+  }
+
+  if (!res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data) continue;
+        if (data === "[DONE]") return;
+        let parsed;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        yield parsed;
+      }
+    }
+  }
+}
+
 function priceScore(model) {
   // OpenRouter returns pricing sometimes as strings. We treat missing as Infinity.
   const pricing = model?.pricing ?? {};
@@ -93,6 +135,24 @@ export async function chatCompletion({ model, messages, responseFormatJson }) {
   }
 
   return await fetchJson(url, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify(body)
+  });
+}
+
+export async function* chatCompletionStream({ model, messages }) {
+  const url = `${config.openRouterBaseUrl}/chat/completions`;
+
+  const body = {
+    model,
+    messages,
+    temperature: Number.isFinite(config.temperature) ? config.temperature : 0.2,
+    max_tokens: config.maxTokens,
+    stream: true
+  };
+
+  yield* fetchSseJson(url, {
     method: "POST",
     headers: buildHeaders(),
     body: JSON.stringify(body)

@@ -59,7 +59,7 @@
 
           <div class="composer">
             <div class="composer-inner">
-              <label class="file-btn">
+              <label id="imageUpload" class="file-btn" role="button" tabindex="0" aria-label="Upload image">
                 <input id="images" type="file" accept="image/*" multiple />
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
@@ -98,6 +98,8 @@
         </aside>
       </main>
     </div>
+
+    <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
 
     <script src="/app.js" type="module"></script>
   </body>

@@ -11,8 +11,12 @@ export function buildSystemPrompt({ totalMemoryLines }) {
     "These memories are meant to be remembered forever unless they become irrelevant.",
     "Avoid duplicates: if a memory already exists, do not add it again.",
     "If you identify duplicate or irrelevant memories, request removals.",
-    "When you want to change TOTAL_MEMORY, you MUST output a JSON object with this exact schema:",
-    "{\n  \"assistant_reply\": string,\n  \"memory\": {\n    \"remove\": [{\"lineStart\": number, \"exactText\": string}],\n    \"add\": [string]\n  },\n  \"summary\": {\n    \"update\": boolean,\n    \"text\": string\n  }\n}",
+    "IMPORTANT OUTPUT FORMAT:",
+    "1) Write your normal user-facing answer in Markdown (NOT JSON).",
+    "2) Then append a metadata block for memory/summary updates exactly like this:",
+    "<<<MEMORY_JSON>>>\n{\n  \"memory\": {\n    \"remove\": [{\"lineStart\": number, \"exactText\": string}],\n    \"add\": [string]\n  },\n  \"summary\": {\n    \"update\": boolean,\n    \"text\": string\n  }\n}",
+    "3) The metadata JSON must be valid JSON (no trailing commas, no comments, no code fences).",
+    "4) If you do not want to change memory, use empty arrays. If you do not want to update summary, set update=false and text='' .",
     "Rules for memory removals:",
     "- lineStart is 1-based (first line is 1)",
     "- exactText must match the memory line(s) exactly as written in TOTAL_MEMORY (no renaming)",
@@ -20,7 +24,6 @@ export function buildSystemPrompt({ totalMemoryLines }) {
     "Rules for memory additions:",
     "- Each entry should be a single line memory",
     "- Do not add duplicates",
-    "If you do not want to change memory, use empty arrays.",
     "\nCURRENT TOTAL_MEMORY (with line numbers):\n" + memoryBlock
   ].join("\n");
 }
